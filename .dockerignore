@@ -1,0 +1,17 @@
+# Ignore local dependencies and build outputs
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.example
+*.md
+
+# Ignore Jupyter notebook and setup files
+Gout_Companion_Setup.ipynb
+
+# Ignore workspace API keys and skill templates
+openrouter_*_skill.json
+firebase-applet-config.json
+firestore.rules
+firebase-blueprint.json
