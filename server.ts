@@ -277,6 +277,52 @@ const addSleepDecl: FunctionDeclaration = {
   }
 };
 
+// Helper function to handle Gemini API requests with fallback for 503 / high demand spikes
+async function generateContentWithFallback(aiClient: any, params: any) {
+  const modelsToTry = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash"
+  ];
+  let lastError = null;
+
+  for (const model of modelsToTry) {
+    let attempts = 3;
+    let delay = 500; // ms initial delay
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        console.log(`[Gemini Request] Attempting model: ${model} (Attempt ${attempt}/${attempts})`);
+        const response = await aiClient.models.generateContent({
+          ...params,
+          model
+        });
+        return response;
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err.message || String(err);
+        const isTransient = errMsg.includes("503") || 
+                            errMsg.includes("UNAVAILABLE") || 
+                            errMsg.includes("429") || 
+                            errMsg.includes("ResourceExhausted") ||
+                            errMsg.includes("high demand") ||
+                            (err.status && (err.status === 503 || err.status === 429));
+        
+        console.warn(`[Gemini Warning] Model ${model} failed on attempt ${attempt} with error:`, errMsg);
+        
+        if (isTransient && attempt < attempts) {
+          console.log(`[Gemini Retry] Transient error detected. Backing off for ${delay}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; // exponential backoff
+        } else {
+          break; // move on to the next model
+        }
+      }
+    }
+  }
+  throw lastError;
+}
+
 // Health Endpoint
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", aiEnabled: !!GEMINI_API_KEY || !!OPENROUTER_API_KEY });
@@ -284,8 +330,8 @@ app.get("/api/health", (req, res) => {
 
 // Gout AI Coach Conversational Endpoint (supports both Google Gemini and OpenRouter)
 app.post("/api/gemini/chat", async (req, res) => {
-  if (!GEMINI_API_KEY && !OPENROUTER_API_KEY) {
-    return res.status(500).json({ error: "No API key configured. Please add GEMINI_API_KEY to your project Secrets." });
+  if (!aiClient && !openrouterClient) {
+    return res.status(500).json({ error: "No AI client initialized. Please check your GEMINI_API_KEY or OPENROUTER_API_KEY." });
   }
 
   const { message, history } = req.body;
@@ -306,8 +352,7 @@ app.post("/api/gemini/chat", async (req, res) => {
         }
       ];
 
-      const response = await aiClient.models.generateContent({
-        model: "gemini-3.5-flash",
+      const response = await generateContentWithFallback(aiClient, {
         contents,
         config: {
           systemInstruction: "You are Gemi Coach, an empathetic expert rheumatologist assistant and Gout Care Coach. Provide evidence-backed guidance (PubMed, Mayo Clinic, Healthline). DO NOT perform any remote side-effects. If you want the app to perform an action, respond with a JSON object with two keys: \"text\" (string reply to user) and \"toolCalls\" (an array of objects {name:string,args:object}). If no tool calls are requested, toolCalls should be an empty array. Be concise.",
@@ -398,8 +443,8 @@ app.post("/api/gemini/chat", async (req, res) => {
 
 // Gout Food Purine Analysis Endpoint (supports both Google Gemini and OpenRouter)
 app.post("/api/gemini/food-analysis", async (req, res) => {
-  if (!GEMINI_API_KEY && !OPENROUTER_API_KEY) {
-    return res.status(500).json({ error: "No API key configured. Please add GEMINI_API_KEY to your project Secrets." });
+  if (!aiClient && !openrouterClient) {
+    return res.status(500).json({ error: "No AI client initialized. Please check your GEMINI_API_KEY or OPENROUTER_API_KEY." });
   }
 
   const { foodQuery } = req.body;
@@ -409,8 +454,7 @@ app.post("/api/gemini/food-analysis", async (req, res) => {
 
   try {
     if (aiClient) {
-      const response = await aiClient.models.generateContent({
-        model: "gemini-3.5-flash",
+      const response = await generateContentWithFallback(aiClient, {
         contents: `Analyze: "${foodQuery}"`,
         config: {
           systemInstruction: `You are an expert clinical dietician specializing in rheumatology and gout disease management. Provide accurate, evidence-based nutrition advice.`,
